@@ -2,15 +2,15 @@
 
 # source aws_credentials.sh
 
-STACK_NAME=cloud-27-stack
+STACK_NAME=stack_name
 REGION=us-east-1
 CLI_PROFILE=default
 
-BUCKET_NAME="my-bucket-20241020"
-GITHUB_REPO="https://github.com/nkansah-wireko-brobbey/auth-app"
-GITHUB_BRANCH="master"
-GITHUB_TOKEN="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"
-DYANMODB_TABLE_NAME="Users"
+BUCKET_NAME="bucket_name"
+GITHUB_REPO="REPO_LINK"
+GITHUB_BRANCH="main"
+GITHUB_TOKEN="your_token"
+DYANMODB_TABLE_NAME="db_name"
 API_GATEWAY_STAGE="dev"
 
 # Deploy the CloudFormation template
