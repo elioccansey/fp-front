@@ -1,5 +1,5 @@
-import api from "../custom-axios"
-import { UserType } from "../types"
+import api from "./custom-axios"
+import { UserType } from "../user.type"
 
 export const register = async ({ name, email, password }: UserType) => {
     let response;

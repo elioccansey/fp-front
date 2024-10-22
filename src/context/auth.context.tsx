@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, SetStateAction, Dispatch } from "react";
-import { UserType } from "../types";
+import { UserType } from "../user.type";
 
 type AuthContextType = {
     user: Omit<UserType, "password"> | null,

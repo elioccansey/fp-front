@@ -1,4 +1,3 @@
-import './App.css'
 import Auth from './pages/auth'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import Profile from './pages/profile'
