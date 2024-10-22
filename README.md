@@ -1,11 +1,13 @@
-<<<<<<< HEAD
 # React + TypeScript + Vite
 This application is an Auth App
 This goal is to pratice serverless deployment with code pipeline. In addition to add pratice cloudforamtion deployment.
 This is the repo used for the code pipeline : https://github.com/elioccansey/fp-front
 To test the cloud formation :
  - Run deploy-infra.sh file
-=======
+
+=========================================================================================
+
+
 # CS516-2024-10A-10D-01-Final-Project
 ## Requirements
 1. Develop an Auth application with the following features
@@ -30,4 +32,3 @@ To test the cloud formation :
 2. Presentation: You will have 15 minutes to demonstrate your application and answer questions.
 3. No need for a PPT: You do not need to prepare any PowerPoint file.
 4. I will notify you of the presentation time via email.
->>>>>>> 8c97780946f630874a75794c3ec7a178fa998c23
