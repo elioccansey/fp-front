@@ -1,0 +1,795 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for React app deployment with API Gateway, Lambda, and CloudFront'
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Name of the S3 bucket to store the React app
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository URL
+  GitHubBranch:
+    Type: String
+    Description: GitHub branch name
+  GitHubToken:
+    Type: String
+    Description: GitHub personal access token
+    NoEcho: true
+  TableName:
+    Type: String
+    Description: Name of the DynamoDB table
+  StageName:
+    Type: String
+    Description: Name of the api gateway stage
+
+Resources:
+  ## S3 Bucket for React App
+  ReactAppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html   
+
+  ReactAppBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn: 
+      - ReactAppBucket
+      - CloudFrontOriginAccessIdentity
+    Properties:
+      Bucket: !Ref ReactAppBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal:
+              CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
+            Action: 's3:GetObject'
+            Resource: !Sub '${ReactAppBucket.Arn}/*'
+
+  ## DynamoDB Configuration
+  MyDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      TableClass: STANDARD_INFREQUENT_ACCESS
+      DeletionProtectionEnabled: false
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: false
+      SSESpecification:
+        SSEEnabled: false
+      Tags:
+        - Key: Environment
+          Value: Test
+
+  CloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'Cloudfront OAI for React App'
+
+  ## CloudFront Distribution
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        DefaultRootObject: index.html
+        Enabled: true
+        HttpVersion: http2
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          Compress: true
+          TargetOriginId: ReactAppS3Origin
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        Origins:
+          - DomainName: !GetAtt ReactAppBucket.RegionalDomainName
+            Id: ReactAppS3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        CustomErrorResponses:
+      # Custom error handling for every relevant HTTP error code
+          - ErrorCode: 400
+            ResponsePagePath: /index.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 403
+            ResponsePagePath: /index.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ResponsePagePath: /index.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 500
+            ResponsePagePath: /index.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 502
+            ResponsePagePath: /index.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 503
+            ResponsePagePath: /index.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 504
+            ResponsePagePath: /index.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+            # CustomOriginConfig:
+            #   HTTPPort: 80
+            #   HTTPSPort: 443
+            #   OriginProtocolPolicy: http-only
+
+  ## Lambda Functions
+  LoginFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: login-function
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
+          const dynamoDB = new DynamoDBClient({ region: "us-east-1" });
+          const DYNAMODB_TABLE_NAME = "Users";
+          export const handler = async (event) => {
+            try {
+              console.log(JSON.parse(event.body));
+              const { email, password } = JSON.parse(event.body);
+              console.log(email, password);
+
+              if (!email || !password) {
+                return {
+                  statusCode: 400,
+                  body: JSON.stringify({ message: "Email and password are required" }),
+                };
+              }
+              const user = await getUserByEmail(email);
+              if (!user) {
+                console.log("User not Found");
+                return {
+                  statusCode: 400,
+                  headers: {
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST",
+                    "Access-Control-Allow-Headers": "Content-Type",
+                  },
+                  body: JSON.stringify({ message: "No such credentials!" }),
+                };
+              }
+              const isPasswordValid = password === user.password;
+              if (!isPasswordValid) {
+                return {
+                  statusCode: 400,
+                  headers: {
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST",
+                    "Access-Control-Allow-Headers": "Content-Type",
+                  },
+                  body: JSON.stringify({ message: "Invalid Username and Password!" }),
+                };
+              }
+              const token = user.email;
+              return {
+                statusCode: 200,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Methods": "POST",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                },
+                body: JSON.stringify({ message: "Successful Login", token }),
+              };
+            } catch (error) {
+              console.error("Error:", error);
+              return {
+                statusCode: 500,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Methods": "POST",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                },
+                body: JSON.stringify({ error: error.message }),
+              };
+            }
+          };
+
+          const getUserByEmail = async (email) => {
+            const item = {
+              email: { S: email },
+            };
+            console.log(email);
+            try {
+              const data = await dynamoDB.send(
+                new GetItemCommand({
+                  TableName: DYNAMODB_TABLE_NAME,
+                  Key: item,
+                })
+              );
+              console.log(data);
+              if (data.Item) {
+                return {
+                  email: data.Item.email.S,
+                  password: data.Item.password.S,
+                };
+              }
+              return null;
+            } catch (error) {
+              console.error("Error fetching user:", error);
+              throw error;
+            }
+          };
+
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  SignupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: signup-function
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          import {
+            DynamoDBClient,
+            PutItemCommand,
+            GetItemCommand,
+          } from "@aws-sdk/client-dynamodb";
+          const dynamoDB = new DynamoDBClient({ region: "us-east-1" });
+          const DYNAMODB_TABLE_NAME = "Users";
+
+          export const handler = async (event) => {
+            try {
+              const { email, name, password } = JSON.parse(event.body);
+              console.log(email, name, password);
+
+              if (!(email && name && password)) {
+                return {
+                  statusCode: 400,
+                  body: JSON.stringify({ message: "Name, password and email required" }),
+                };
+              }
+
+              const user = await getUserByEmail(email);
+
+              if (user) {
+                console.log("User exists");
+                return {
+                  statusCode: 400,
+                  headers: {
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST",
+                    "Access-Control-Allow-Headers": "Content-Type",
+                  },
+                  body: JSON.stringify({ message: "User Already Exists!" }),
+                };
+              }
+              const timestamp = new Date().toISOString();
+              const item = {
+                email: { S: email },
+                name: { S: name },
+                password: { S: password },
+                datetime: { S: timestamp },
+              };
+
+              await dynamoDB.send(
+                new PutItemCommand({
+                  TableName: DYNAMODB_TABLE_NAME,
+                  Item: item,
+                })
+              );
+
+              return {
+                statusCode: 200,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Methods": "POST",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                },
+                body: JSON.stringify({ message: "User successfully added" }),
+              };
+            } catch (error) {
+              console.error("Error:", error);
+              return {
+                statusCode: 500,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Methods": "POST",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                },
+                body: JSON.stringify({ error: error.message }),
+              };
+            }
+          };
+
+          const getUserByEmail = async (email) => {
+            const item = {
+              email: { S: email },
+            };
+
+            console.log(email);
+
+            try {
+              const data = await dynamoDB.send(
+                new GetItemCommand({
+                  TableName: DYNAMODB_TABLE_NAME,
+                  Key: item,
+                })
+              );
+              console.log(data);
+              if (data.Item) {
+                return {
+                  email: data.Item.email.S,
+                };
+              }
+              return null;
+            } catch (error) {
+              console.error("Error fetching user:", error);
+              throw error;
+            }
+          };
+
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  UpdateProfileFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: update-profile-function
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+          import {
+            DynamoDBClient,
+            PutItemCommand,
+            UpdateItemCommand,
+          } from "@aws-sdk/client-dynamodb";
+          import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+          const s3 = new S3Client({ region: "us-east-1" });
+          const dynamoDB = new DynamoDBClient({ region: "us-east-1" });
+
+          const DYNAMODB_TABLE_NAME = "Users";
+          const BUCKET_NAME = "images-004";
+
+          export const handler = async (event) => {
+            try {
+              const email = event.pathParameters.email;
+
+              const { filename, contentType } = JSON.parse(event.body);
+              console.log(filename, contentType, email);
+
+              const uploadParams = {
+                Bucket: BUCKET_NAME,
+                Key: filename,
+                ContentType: contentType,
+              };
+              const command = new PutObjectCommand(uploadParams);
+
+              const uploadURL = await getSignedUrl(s3, command, { expiresIn: 60 });
+
+              const timestamp = new Date().toISOString();
+
+              await dynamoDB.send(
+                new UpdateItemCommand({
+                  TableName: DYNAMODB_TABLE_NAME,
+                  Key: {
+                    email: { S: email },
+                  },
+                  UpdateExpression: "SET #dt = :updatedtime, #piu = :profileImgURL",
+                  ExpressionAttributeNames: {
+                    "#dt": "updatedtime",
+                    "#piu": "profileImgURL",
+                  },
+                  ExpressionAttributeValues: {
+                    ":updatedtime": { S: timestamp },
+                    ":profileImgURL": { S: uploadURL },
+                  },
+                })
+              );
+
+              return {
+                statusCode: 200,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Methods": "POST",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                },
+                body: JSON.stringify({ message: "Image Updated", imgURL: uploadURL }),
+              };
+            } catch (error) {
+              console.error("Error:", error);
+              return {
+                statusCode: 500,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Methods": "POST",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                },
+                body: JSON.stringify({ error: error.message }),
+              };
+            }
+          };
+
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  ApiGatewayCorsConfiguration:
+    Type: 'AWS::ApiGateway::GatewayResponse'
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS,PUT,PATCH,DELETE'"
+      ResponseType: DEFAULT_4XX
+      RestApiId: !Ref ApiGateway
+
+  GatewayResponseForDefault5XX:
+    Type: 'AWS::ApiGateway::GatewayResponse'
+    Properties:
+      ResponseType: DEFAULT_5XX
+      RestApiId: !Ref ApiGateway
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS,PUT,PATCH,DELETE'"
+
+
+  ## API Gateway
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: MyApi
+
+  AuthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: auth
+
+  LoginResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref AuthResource
+      PathPart: login
+
+  SignupResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref AuthResource
+      PathPart: signup
+
+  UpdateProfileResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: update-profile
+
+  UpdateProfileEmailResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref UpdateProfileResource
+      PathPart: '{email}'
+
+  LoginMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref LoginResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LoginFunction.Arn}/invocations
+
+  SignupMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref SignupResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupFunction.Arn}/invocations
+
+  UpdateProfilePatchMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref UpdateProfileEmailResource
+      HttpMethod: PATCH
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UpdateProfileFunction.Arn}/invocations
+
+
+  LoginOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref LoginResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'" # Adjust for each method
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: 'Empty'
+
+  SignupOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref SignupResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'" # Adjust for each method
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: 'Empty'
+
+
+  UpdateProfileOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref UpdateProfileEmailResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'PATCH,OPTIONS'" # Adjust for each method
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: 'Empty'
+
+  ApiGatewayCorsConfiguration:
+    Type: 'AWS::ApiGateway::GatewayResponse'
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS,PUT,PATCH,DELETE'"
+      ResponseType: DEFAULT_4XX
+      RestApiId: !Ref ApiGateway          
+   # New Deployment resource
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - LoginMethod
+      - SignupMethod
+      - UpdateProfilePatchMethod
+      - LoginOptionsMethod
+      - SignupOptionsMethod
+      - UpdateProfileOptionsMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      Description: 'Deployment for MyApi'
+
+  # New Stage resource
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref ApiGatewayDeployment
+      RestApiId: !Ref ApiGateway
+      StageName: !Ref StageName  # You can change this to any stage name you prefer
+      Description: 'Environment stage'
+  LoginLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LoginFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/POST/auth/login
+
+  SignupLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SignupFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/POST/auth/signup
+
+  UpdateProfileLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UpdateProfileFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/PATCH/update-profile/{email}
+
+  ## CodePipeline
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-artifacts
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${AWS::StackName}-pipeline
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactStoreBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              Configuration:
+                Owner: !Select [3, !Split ['/', !Ref GitHubRepo]]
+                Repo: !Select [4, !Split ['/', !Ref GitHubRepo]]
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubToken
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: 1
+              InputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                BucketName: !Ref ReactAppBucket
+                Extract: true
+
+  ## IAM Roles
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AWSCodeBuildAdminAccess
+
+
+  ## CodeBuild Project
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${AWS::StackName}-build
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodeBuildAdminAccess
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+
+Outputs:
+  BucketWebsiteURL:
+    Value: !GetAtt ReactAppBucket.WebsiteURL
+    Description: URL for website hosted on S3
+  CloudFrontURL:
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
+    Description: URL of the CloudFront distribution
+  ApiGatewayURL:
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/
+    Description: URL of the API Gateway
